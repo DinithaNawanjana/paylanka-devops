@@ -1,0 +1,50 @@
+﻿name: paylanka-devops
+services:
+  db:
+    image: postgres:16
+    container_name: paylanka-db
+    environment:
+      POSTGRES_USER: paylanka
+      POSTGRES_PASSWORD: paylanka
+      POSTGRES_DB: paylanka
+    ports:
+      - \"5432:5432\"
+    volumes:
+      - dbdata:/var/lib/postgresql/data
+      - ./services/payments-api/config:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: [\"CMD-SHELL\", \"pg_isready -U paylanka -d paylanka\"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build:
+      context: ./services/payments-api
+    container_name: paylanka-api
+    env_file:
+      - ./services/payments-api/.env.example
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - \"8000:8000\"
+    healthcheck:
+      test: [\"CMD\", \"wget\", \"-qO-\", \"http://localhost:8000/health\"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  web:
+    image: nginx:alpine
+    container_name: paylanka-web
+    depends_on:
+      - api
+    volumes:
+      - ./web/portal:/usr/share/nginx/html:ro
+      - ./infra/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+      - \"8080:80\"
+
+volumes:
+  dbdata:

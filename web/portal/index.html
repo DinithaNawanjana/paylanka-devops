@@ -1,0 +1,55 @@
+﻿<!doctype html>
+<html lang=\"en\">
+<head>
+  <meta charset=\"utf-8\">
+  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">
+  <title>PayLanka · Payments Portal</title>
+  <script src=\"https://cdn.tailwindcss.com\"></script>
+</head>
+<body class=\"min-h-screen bg-gray-50\">
+  <header class=\"bg-white shadow\">
+    <div class=\"mx-auto max-w-6xl px-6 py-4 flex items-center justify-between\">
+      <h1 class=\"text-xl font-semibold tracking-tight\">PayLanka · Payments Portal</h1>
+      <span class=\"text-sm text-gray-500\" id=\"health\">checking…</span>
+    </div>
+  </header>
+
+  <main class=\"mx-auto max-w-6xl px-6 py-8\">
+    <section class=\"grid md:grid-cols-2 gap-6\">
+      <form id=\"createPayment\" class=\"bg-white rounded-2xl p-6 shadow\">
+        <h2 class=\"text-lg font-semibold mb-4\">Create Payment</h2>
+        <label class=\"block text-sm mb-2\">Reference</label>
+        <input class=\"w-full border rounded-lg px-3 py-2 mb-4\" name=\"reference\" placeholder=\"INV-2025-001\" required>
+        <label class=\"block text-sm mb-2\">Amount (LKR)</label>
+        <input class=\"w-full border rounded-lg px-3 py-2 mb-4\" name=\"amount\" type=\"number\" min=\"1\" required>
+        <button class=\"px-4 py-2 rounded-lg bg-black text-white\" type=\"submit\">Submit</button>
+        <p id=\"msg\" class=\"text-sm mt-3\"></p>
+      </form>
+
+      <div class=\"bg-white rounded-2xl p-6 shadow\">
+        <div class=\"flex items-center justify-between mb-4\">
+          <h2 class=\"text-lg font-semibold\">Recent Payments</h2>
+          <button id=\"reload\" class=\"text-sm underline\">Reload</button>
+        </div>
+        <div class=\"overflow-auto\">
+          <table class=\"w-full text-sm\">
+            <thead class=\"bg-gray-100\">
+              <tr>
+                <th class=\"text-left p-2\">ID</th>
+                <th class=\"text-left p-2\">Reference</th>
+                <th class=\"text-right p-2\">Amount</th>
+                <th class=\"text-left p-2\">Currency</th>
+                <th class=\"text-left p-2\">Status</th>
+                <th class=\"text-left p-2\">Created</th>
+              </tr>
+            </thead>
+            <tbody id=\"rows\"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script src=\"./assets/app.js\"></script>
+</body>
+</html>

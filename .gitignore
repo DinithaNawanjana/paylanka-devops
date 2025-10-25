@@ -1,0 +1,13 @@
+﻿# Node/JS
+node_modules/
+npm-debug.log*
+yarn-error.log*
+coverage/
+dist/
+.env
+# Docker
+*.pid
+*.log
+# OS
+.DS_Store
+Thumbs.db
