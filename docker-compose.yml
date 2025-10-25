@@ -7,33 +7,31 @@ services:
       POSTGRES_USER: paylanka
       POSTGRES_PASSWORD: paylanka
       POSTGRES_DB: paylanka
-    ports:
-      - \"5432:5432\"
+    # no host port mapping; api will reach db over the compose network
     volumes:
       - dbdata:/var/lib/postgresql/data
       - ./services/payments-api/config:/docker-entrypoint-initdb.d:ro
     healthcheck:
-      test: [\"CMD-SHELL\", \"pg_isready -U paylanka -d paylanka\"]
+      test: ["CMD-SHELL", "pg_isready -U paylanka -d paylanka"]
       interval: 5s
       timeout: 3s
-      retries: 10
+      retries: 20
+    restart: unless-stopped
 
   api:
     build:
       context: ./services/payments-api
     container_name: paylanka-api
+    environment:
+      - NODE_ENV=development
     env_file:
       - ./services/payments-api/.env.example
     depends_on:
       db:
         condition: service_healthy
     ports:
-      - \"8000:8000\"
-    healthcheck:
-      test: [\"CMD\", \"wget\", \"-qO-\", \"http://localhost:8000/health\"]
-      interval: 10s
-      timeout: 3s
-      retries: 10
+      - 8000:8000
+    restart: unless-stopped
 
   web:
     image: nginx:alpine
@@ -44,7 +42,9 @@ services:
       - ./web/portal:/usr/share/nginx/html:ro
       - ./infra/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
     ports:
-      - \"8080:80\"
+      - 8080:80
+    restart: unless-stopped
 
 volumes:
   dbdata:
+

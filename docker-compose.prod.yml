@@ -1,0 +1,66 @@
+﻿name: paylanka
+
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: paylanka
+      POSTGRES_PASSWORD: paylanka
+      POSTGRES_DB: paylanka
+    volumes:
+      - dbdata:/var/lib/postgresql/data
+      # optional seed/init SQL goes here; comment this line if you don't have any .sql files
+      - ./services/payments-api/config:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U paylanka -d paylanka"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    restart: unless-stopped
+
+  api:
+    image: dinithan/paylanka-api:2025.10.26-021239
+    environment:
+      PGHOST: db
+      PGPORT: 5432
+      PGUSER: paylanka
+      PGPASSWORD: paylanka
+      PGDATABASE: paylanka
+      NODE_ENV: production
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8000/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 40
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    restart: unless-stopped
+
+  web:
+    image: dinithan/paylanka-web:2025.10.26-021239
+    depends_on:
+      - api
+    ports:
+      - "8080:80"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    restart: unless-stopped
+
+volumes:
+  dbdata:

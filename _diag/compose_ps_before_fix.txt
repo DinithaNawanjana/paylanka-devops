@@ -1,0 +1,4 @@
+﻿NAME           IMAGE                 COMMAND                  SERVICE   CREATED         STATUS                          PORTS
+paylanka-api   paylanka-devops-api   "docker-entrypoint.sΓÇª"   api       6 minutes ago   Restarting (1) 55 seconds ago   
+paylanka-db    postgres:16           "docker-entrypoint.sΓÇª"   db        6 minutes ago   Up 6 minutes (healthy)          5432/tcp
+paylanka-web   nginx:alpine          "/docker-entrypoint.ΓÇª"   web       6 minutes ago   Restarting (1) 57 seconds ago   

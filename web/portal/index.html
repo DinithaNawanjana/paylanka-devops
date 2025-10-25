@@ -1,55 +1,106 @@
 ﻿<!doctype html>
-<html lang=\"en\">
+<html lang="en">
 <head>
-  <meta charset=\"utf-8\">
-  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">
-  <title>PayLanka · Payments Portal</title>
-  <script src=\"https://cdn.tailwindcss.com\"></script>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PayLanka · Smart Payment Portal</title>
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+  <meta http-equiv="Pragma" content="no-cache" />
+  <meta http-equiv="Expires" content="0" />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    body { font-family: 'Inter', sans-serif; }
+    .fade-in { animation: fadeIn .6s ease-in; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+    .glow { box-shadow: 0 0 10px rgba(79,70,229,0.3); }
+  </style>
 </head>
-<body class=\"min-h-screen bg-gray-50\">
-  <header class=\"bg-white shadow\">
-    <div class=\"mx-auto max-w-6xl px-6 py-4 flex items-center justify-between\">
-      <h1 class=\"text-xl font-semibold tracking-tight\">PayLanka · Payments Portal</h1>
-      <span class=\"text-sm text-gray-500\" id=\"health\">checking…</span>
+<body class="min-h-screen bg-gradient-to-b from-indigo-50 to-white text-gray-900">
+  <!-- HEADER -->
+  <header class="bg-gradient-to-r from-indigo-600 to-purple-600 text-white shadow-lg">
+    <div class="mx-auto max-w-7xl px-6 py-5 flex items-center justify-between">
+      <h1 class="text-2xl font-semibold tracking-tight">💳 PayLanka Payments Portal</h1>
+      <div class="flex items-center gap-2 text-sm">
+        <span id="healthDot" class="inline-block h-3 w-3 rounded-full bg-gray-300 animate-pulse"></span>
+        <span id="healthText">checking API…</span>
+      </div>
     </div>
   </header>
 
-  <main class=\"mx-auto max-w-6xl px-6 py-8\">
-    <section class=\"grid md:grid-cols-2 gap-6\">
-      <form id=\"createPayment\" class=\"bg-white rounded-2xl p-6 shadow\">
-        <h2 class=\"text-lg font-semibold mb-4\">Create Payment</h2>
-        <label class=\"block text-sm mb-2\">Reference</label>
-        <input class=\"w-full border rounded-lg px-3 py-2 mb-4\" name=\"reference\" placeholder=\"INV-2025-001\" required>
-        <label class=\"block text-sm mb-2\">Amount (LKR)</label>
-        <input class=\"w-full border rounded-lg px-3 py-2 mb-4\" name=\"amount\" type=\"number\" min=\"1\" required>
-        <button class=\"px-4 py-2 rounded-lg bg-black text-white\" type=\"submit\">Submit</button>
-        <p id=\"msg\" class=\"text-sm mt-3\"></p>
-      </form>
+  <!-- KPI CARDS -->
+  <main class="mx-auto max-w-7xl px-6 py-8 space-y-8 fade-in">
+    <section class="grid sm:grid-cols-2 lg:grid-cols-4 gap-6">
+      <div class="bg-white/90 backdrop-blur-md rounded-2xl p-6 shadow-lg hover:glow transition">
+        <p class="text-sm text-gray-500">Total Payments</p>
+        <p class="text-4xl font-bold text-indigo-700" id="kpiCount">0</p>
+      </div>
+      <div class="bg-white/90 rounded-2xl p-6 shadow-lg hover:glow transition">
+        <p class="text-sm text-gray-500">Total Volume (LKR)</p>
+        <p class="text-4xl font-bold text-purple-700" id="kpiSum">0.00</p>
+      </div>
+      <div class="bg-white/90 rounded-2xl p-6 shadow-lg hover:glow transition">
+        <p class="text-sm text-gray-500">Last 7 Days (LKR)</p>
+        <p class="text-4xl font-bold text-pink-700" id="kpiLast7">0.00</p>
+      </div>
+      <div class="bg-white/90 rounded-2xl p-6 shadow-lg hover:glow transition">
+        <p class="text-sm text-gray-500">API Status</p>
+        <p class="text-lg font-medium" id="kpiStatus">—</p>
+      </div>
+    </section>
 
-      <div class=\"bg-white rounded-2xl p-6 shadow\">
-        <div class=\"flex items-center justify-between mb-4\">
-          <h2 class=\"text-lg font-semibold\">Recent Payments</h2>
-          <button id=\"reload\" class=\"text-sm underline\">Reload</button>
+    <!-- CHART + CREATE PAYMENT -->
+    <section class="grid lg:grid-cols-2 gap-6">
+      <div class="bg-white rounded-2xl p-6 shadow-md hover:shadow-xl transition">
+        <div class="flex items-center justify-between mb-3">
+          <h2 class="text-lg font-semibold text-indigo-700">📊 Payment Trends (Last 7)</h2>
+          <button id="refreshAll" class="text-indigo-600 hover:text-indigo-800 text-sm font-medium underline">Refresh</button>
         </div>
-        <div class=\"overflow-auto\">
-          <table class=\"w-full text-sm\">
-            <thead class=\"bg-gray-100\">
-              <tr>
-                <th class=\"text-left p-2\">ID</th>
-                <th class=\"text-left p-2\">Reference</th>
-                <th class=\"text-right p-2\">Amount</th>
-                <th class=\"text-left p-2\">Currency</th>
-                <th class=\"text-left p-2\">Status</th>
-                <th class=\"text-left p-2\">Created</th>
-              </tr>
-            </thead>
-            <tbody id=\"rows\"></tbody>
-          </table>
+        <canvas id="chart" height="140"></canvas>
+      </div>
+
+      <form id="createPayment" class="bg-white rounded-2xl p-6 shadow-md hover:shadow-xl transition">
+        <h2 class="text-lg font-semibold text-indigo-700 mb-4">➕ Create Payment</h2>
+        <label class="block text-sm mb-1 text-gray-600">Reference ID</label>
+        <input class="w-full border border-gray-300 rounded-lg px-3 py-2 mb-4 focus:ring-2 focus:ring-indigo-500" name="reference" placeholder="INV-2025-001" required>
+        <label class="block text-sm mb-1 text-gray-600">Amount (LKR)</label>
+        <input class="w-full border border-gray-300 rounded-lg px-3 py-2 mb-4 focus:ring-2 focus:ring-indigo-500" name="amount" type="number" min="1" required>
+        <div class="flex items-center gap-3">
+          <button class="px-4 py-2 rounded-lg bg-gradient-to-r from-indigo-600 to-purple-600 text-white font-medium hover:opacity-90 transition" type="submit">Submit</button>
+          <span id="msg" class="text-sm"></span>
         </div>
+      </form>
+    </section>
+
+    <!-- TABLE -->
+    <section class="bg-white rounded-2xl p-6 shadow-md hover:shadow-xl transition">
+      <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-4">
+        <h2 class="text-lg font-semibold text-indigo-700">📋 Recent Payments</h2>
+        <input id="search" class="border border-gray-300 rounded-lg px-3 py-2 w-full md:w-64 focus:ring-2 focus:ring-indigo-500" placeholder="Search by reference…">
+      </div>
+      <div class="overflow-auto">
+        <table class="w-full text-sm">
+          <thead class="bg-indigo-50 text-indigo-700">
+            <tr>
+              <th class="text-left p-2">ID</th>
+              <th class="text-left p-2">Reference</th>
+              <th class="text-right p-2">Amount</th>
+              <th class="text-left p-2">Currency</th>
+              <th class="text-left p-2">Status</th>
+              <th class="text-left p-2">Created</th>
+              <th class="text-right p-2">Actions</th>
+            </tr>
+          </thead>
+          <tbody id="rows"></tbody>
+        </table>
       </div>
     </section>
   </main>
 
-  <script src=\"./assets/app.js\"></script>
+  <footer class="text-center text-xs text-gray-500 mt-10 mb-6">
+    © 2025 PayLanka DevOps Portal — Demo for AWS + Docker Microservice
+  </footer>
+
+  <script src="./assets/app.js?v=1761438160.35933"></script>
 </body>
 </html>

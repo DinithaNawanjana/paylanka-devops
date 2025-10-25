@@ -1,0 +1,29 @@
+﻿{
+  "name": "payments-api",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "src/server.js",
+  "scripts": {
+    "start":"node src/server.js",
+    "test":"node --experimental-vm-modules node_modules/jest/bin/jest.js",
+    "lint":"eslint src --ext .js"(add eslint later)\"",
+    "dev": "node --watch src/server.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "pg": "^8.13.1",
+    "pino": "^9.4.0",
+    "pino-http": "^10.3.0"
+  },
+  "devDependencies": {
+    "@babel/preset-env": "^7.28.5",
+    "@eslint/js": "^9.38.0",
+    "babel-jest": "^30.2.0",
+    "eslint": "^9.38.0",
+    "jest": "^30.2.0"
+  }
+}
+
+
