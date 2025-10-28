@@ -1,6 +1,6 @@
 pipeline {
   agent any
-  options { timestamps(); ansiColor('xterm'); buildDiscarder(logRotator(numToKeepStr: '15')) }
+  options { timestamps(); buildDiscarder(logRotator(numToKeepStr: '15')) }
   parameters {
     string(name: 'DOCKER_NS', defaultValue: 'dinithan', description: 'Docker Hub namespace')
     string(name: 'APP_HOST', defaultValue: 'CHANGE_ME_APP_PUBLIC_IP', description: 'App VM public IP/DNS')
