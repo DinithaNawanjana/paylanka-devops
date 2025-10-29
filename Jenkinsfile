@@ -101,43 +101,36 @@ pipeline {
 
    stage('Deploy Stack on App VM (DB + API + WEB)') {
   steps {
-    withCredentials([sshUserPrivateKey(credentialsId: env.SSH_CRED_ID,
-                                       keyFileVariable: 'SSH_KEY',
-                                       usernameVariable: 'SSH_USER')]) {
-      sh(label: 'prep-remote-dir', script: '''
-        set -e
-        chmod 600 "$SSH_KEY" || true
-        ssh -i "$SSH_KEY" -o IdentitiesOnly=yes -o PubkeyAuthentication=yes \
-            -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 \
-            "$SSH_USER"@"$APP_VM_HOST" 'mkdir -p "$REMOTE_DIR" && sudo chown '"$SSH_USER:$SSH_USER"' "$REMOTE_DIR"'
-      ''')
-      sh(label: 'copy-compose', script: '''
-        set -e
-        test -f docker-compose.prod.yml
-        scp -i "$SSH_KEY" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 \
-            docker-compose.prod.yml "$SSH_USER"@"$APP_VM_HOST":"$REMOTE_DIR"/docker-compose.prod.yml
-      ''')
-      sh(label: 'write-env', script: '''
-        set -e
-        ssh -i "$SSH_KEY" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 \
-            "$SSH_USER"@"$APP_VM_HOST" "cat > $REMOTE_DIR/.env.prod <<EOF
-DOCKER_USER=$DOCKER_USER
-IMAGE_TAG=$IMAGE_TAG
-DB_NAME=paylanka
-DB_USER=paylanka
-DB_PASS=P@ylanka123
-API_PORT=8000
-WEB_PORT=8080
-EOF"
-      ''')
-      sh(label: 'compose-up', script: '''
-        set -e
-        ssh -i "$SSH_KEY" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 \
-            "$SSH_USER"@"$APP_VM_HOST" \
-            "cd $REMOTE_DIR && docker compose -f docker-compose.prod.yml --env-file .env.prod pull && \
-             docker compose -f docker-compose.prod.yml --env-file .env.prod up -d && \
-             docker compose -f docker-compose.prod.yml --env-file .env.prod ps"
-      ''')
+    withCredentials([string(credentialsId: 'dockerhub-pat', variable: 'DH_PASS')]) {
+      sshagent(credentials: ['appvm-ssh']) {
+        sh label: 'prep-remote-dir', script: '''
+          set -e
+          ssh -o IdentitiesOnly=yes -o PubkeyAuthentication=yes \
+              -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 \
+              ubuntu@${APP_VM_HOST} 'sudo mkdir -p /opt/paylanka && sudo chown ubuntu:ubuntu /opt/paylanka'
+        '''
+        sh label: 'copy prod files', script: '''
+          set -e
+          scp -o IdentitiesOnly=yes -o PubkeyAuthentication=yes \
+              -o StrictHostKeyChecking=accept-new \
+              docker-compose.prod.yml .env.prod \
+              ubuntu@${APP_VM_HOST}:/opt/paylanka/
+        '''
+        sh label: 'compose up', script: '''
+          set -e
+          ssh -o IdentitiesOnly=yes -o PubkeyAuthentication=yes \
+              -o StrictHostKeyChecking=accept-new \
+              ubuntu@${APP_VM_HOST} "
+                set -e
+                cd /opt/paylanka
+                printf %s ${DH_PASS} | docker login -u ${DOCKER_USER} --password-stdin
+                export VERSION=${VERSION}
+                docker compose -f docker-compose.prod.yml pull
+                docker compose -f docker-compose.prod.yml up -d
+                docker compose -f docker-compose.prod.yml ps
+              "
+        '''
+      }
     }
   }
 }
