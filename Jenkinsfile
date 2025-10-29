@@ -57,19 +57,20 @@ pipeline {
     }
 
     stage('Docker Push') {
-      steps {
-        withCredentials([usernamePassword(credentialsId: env.DH_CRED_ID, usernameVariable: 'DH_USER', passwordVariable: 'DH_PASS')]) {
-          sh '''
-            set -e
-            # normalize token to avoid CRLF issues
-            printf "%s" "$DH_PASS" | tr -d "\\r\\n" | docker login -u "$DH_USER" --password-stdin
-            docker push '"${IMAGE}"':'"${VERSION}"'
-            docker push '"${IMAGE}"':latest
-            docker logout || true
-          '''
-        }
-      }
+  steps {
+    withCredentials([usernamePassword(credentialsId: env.DH_CRED_ID, usernameVariable: 'DH_USER', passwordVariable: 'DH_PASS')]) {
+      // 1) Do the login in a shell block
+      sh '''
+        set -e
+        printf "%s" "$DH_PASS" | tr -d "\\r\\n" | docker login -u "$DH_USER" --password-stdin
+      '''
+      // 2) Use Groovy to expand IMAGE/VERSION before sh executes
+      sh "docker push ${env.IMAGE}:${env.VERSION}"
+      sh "docker push ${env.IMAGE}:latest"
+      sh 'docker logout || true'
     }
+  }
+}
 
     stage('Deploy to App VM') {
       when { expression { return (env.APP_VM_HOST?.trim()) } }
