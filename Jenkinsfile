@@ -3,13 +3,13 @@ pipeline {
   options { timestamps() }
 
   environment {
-    // ---- Docker Hub repo names ----
+    // ---- Docker Hub repos ----
     DOCKER_USER = 'dinithan'
     API_IMAGE   = "${DOCKER_USER}/payments-api"
-    WEB_IMAGE   = "${DOCKER_USER}/payments-web"   // optional (built only if Dockerfile exists)
+    WEB_IMAGE   = "${DOCKER_USER}/payments-web"  // optional
     DB_IMAGE    = "postgres:16"
 
-    // ---- Names / ports / network ----
+    // ---- Container names / ports ----
     API_NAME = 'paylanka-api'
     WEB_NAME = 'paylanka-web'
     DB_NAME  = 'paylanka-db'
@@ -20,20 +20,21 @@ pipeline {
 
     NET_NAME = 'paylanka-net'
 
-    // ---- App VM (private IP in VPC) ----
+    // ---- App VM ----
     APP_VM_HOST = '172.31.37.22'
     APP_VM_USER = 'ubuntu'
+    SSH_KEY_PATH = '/var/lib/jenkins/.ssh/id_appvm' // you already verified this
 
-    // ---- Jenkins credentials ----
-    DH_CRED_ID   = 'dockerhub'   // Docker Hub username + PAT
-    PG_CRED_ID   = 'pg-admin'    // Postgres username + password
-    SSH_KEY_PATH = '/var/lib/jenkins/.ssh/id_appvm' // verified key path
+    // ---- Jenkins creds ----
+    DH_CRED_ID = 'dockerhub'  // DockerHub username+PAT
+    PG_CRED_ID = 'pg-admin'   // Postgres username+password
+
+    // runtime flags
+    WEB_BUILT = '0'           // will be set to '1' if WEB gets built
   }
 
   stages {
-    stage('Checkout') {
-      steps { checkout scm }
-    }
+    stage('Checkout') { steps { checkout scm } }
 
     stage('Version') {
       steps {
@@ -53,7 +54,6 @@ pipeline {
           def df  = 'services/payments-api/Dockerfile'
           def ctx = 'services/payments-api'
           if (!fileExists(df)) { error "API Dockerfile not found at ${df}" }
-
           sh """
             docker version
             docker build -t ${env.API_IMAGE}:${env.VERSION} -t ${env.API_IMAGE}:latest -f ${df} ${ctx}
@@ -83,19 +83,18 @@ pipeline {
           def df  = 'services/web/Dockerfile'
           def ctx = 'services/web'
           if (fileExists(df)) {
-            sh """
-              docker build -t ${env.WEB_IMAGE}:${env.VERSION} -t ${env.WEB_IMAGE}:latest -f ${df} ${ctx}
-            """
+            sh "docker build -t ${env.WEB_IMAGE}:${env.VERSION} -t ${env.WEB_IMAGE}:latest -f ${df} ${ctx}"
+            env.WEB_BUILT = '1'
           } else {
             echo "No ${df} found, skipping WEB image build."
-            env.WEB_IMAGE = ''   // mark as absent
+            env.WEB_BUILT = '0'
           }
         }
       }
     }
 
     stage('Docker Push - WEB (optional)') {
-      when { expression { return (env.WEB_IMAGE?.trim()) } }
+      when { expression { return env.WEB_BUILT == '1' } }
       steps {
         withCredentials([usernamePassword(credentialsId: env.DH_CRED_ID, usernameVariable: 'DH_USER', passwordVariable: 'DH_PASS')]) {
           sh '''
@@ -109,7 +108,7 @@ pipeline {
       }
     }
 
-    // ===== Deploy stack (DB + API + WEB) =====
+    // ===== Deploy (DB + API + optional WEB) =====
     stage('Deploy Stack on App VM (DB + API + WEB)') {
       steps {
         withCredentials([
@@ -117,29 +116,26 @@ pipeline {
           usernamePassword(credentialsId: env.PG_CRED_ID, usernameVariable: 'PG_USER', passwordVariable: 'PG_PASS')
         ]) {
           script {
-            // Common pre-steps on remote (login + network)
             sh """
               set -e
               SSH_KEY='${env.SSH_KEY_PATH}'
               SSH_OPTS="-i \$SSH_KEY -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20"
               [ -f "\$SSH_KEY" ] && chmod 600 "\$SSH_KEY"
 
-              # Docker Hub login on remote
+              # Login to Docker Hub on remote
               printf "%s" "$DH_PASS" | tr -d "\\r\\n" | \\
                 ssh \$SSH_OPTS ${env.APP_VM_USER}@${env.APP_VM_HOST} \\
-                  "docker login -u '${'$'}{DH_USER}' --password-stdin"
+                "docker login -u '${'$'}{DH_USER}' --password-stdin"
 
-              # Ensure network exists
+              # Ensure network
               ssh \$SSH_OPTS ${env.APP_VM_USER}@${env.APP_VM_HOST} \\
                 "docker network inspect ${env.NET_NAME} >/dev/null 2>&1 || docker network create ${env.NET_NAME}"
             """
 
-            // Deploy DB
+            // DB
             sh """
               set -e
-              SSH_KEY='${env.SSH_KEY_PATH}'
-              SSH_OPTS="-i \$SSH_KEY -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20"
-
+              SSH_OPTS="-i ${env.SSH_KEY_PATH} -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20"
               ssh \$SSH_OPTS ${env.APP_VM_USER}@${env.APP_VM_HOST} bash -lc 'set -e
                 docker rm -f ${env.DB_NAME} 2>/dev/null || true
                 docker run -d --name ${env.DB_NAME} --restart=always \\
@@ -152,12 +148,10 @@ pipeline {
               '
             """
 
-            // Deploy API
+            // API
             sh """
               set -e
-              SSH_KEY='${env.SSH_KEY_PATH}'
-              SSH_OPTS="-i \$SSH_KEY -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20"
-
+              SSH_OPTS="-i ${env.SSH_KEY_PATH} -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20"
               ssh \$SSH_OPTS ${env.APP_VM_USER}@${env.APP_VM_HOST} bash -lc 'set -e
                 docker pull ${env.API_IMAGE}:${env.VERSION}
                 docker rm -f ${env.API_NAME} 2>/dev/null || true
@@ -168,13 +162,11 @@ pipeline {
               '
             """
 
-            // Deploy WEB (only if built)
-            if (env.WEB_IMAGE?.trim()) {
+            // WEB (only if built)
+            if (env.WEB_BUILT == '1') {
               sh """
                 set -e
-                SSH_KEY='${env.SSH_KEY_PATH}'
-                SSH_OPTS="-i \$SSH_KEY -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20"
-
+                SSH_OPTS="-i ${env.SSH_KEY_PATH} -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20"
                 ssh \$SSH_OPTS ${env.APP_VM_USER}@${env.APP_VM_HOST} bash -lc 'set -e
                   docker pull ${env.WEB_IMAGE}:${env.VERSION}
                   docker rm -f ${env.WEB_NAME} 2>/dev/null || true
@@ -187,11 +179,10 @@ pipeline {
               echo "WEB deploy skipped (no WEB image)."
             }
 
-            // Status line
+            // Status
             sh """
               set -e
-              SSH_KEY='${env.SSH_KEY_PATH}'
-              SSH_OPTS="-i \$SSH_KEY -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20"
+              SSH_OPTS="-i ${env.SSH_KEY_PATH} -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20"
               ssh \$SSH_OPTS ${env.APP_VM_USER}@${env.APP_VM_HOST} \\
                 "docker ps --format 'NAME={{.Names}}  STATUS={{.Status}}  PORTS={{.Ports}}' | egrep -i '${env.DB_NAME}|${env.API_NAME}|${env.WEB_NAME}' || true"
             """
@@ -211,7 +202,7 @@ pipeline {
             done
             echo "WARN: API smoke not 200"; exit 0
           """
-          if (env.WEB_IMAGE?.trim()) {
+          if (env.WEB_BUILT == '1') {
             sh """
               for i in 1 2 3 4 5; do
                 curl -fsS --max-time 5 http://${env.APP_VM_HOST}:${env.WEB_PORT}/ && exit 0
@@ -229,8 +220,8 @@ pipeline {
 
   post {
     success {
-      echo "✅ Built/pushed: ${env.API_IMAGE}:${env.VERSION}${env.WEB_IMAGE?.trim() ? " and ${env.WEB_IMAGE}:${env.VERSION}" : ""}"
-      echo "✅ Deployed: DB:${env.DB_PORT} API:${env.API_PORT}${env.WEB_IMAGE?.trim() ? " WEB:${env.WEB_PORT}" : ""} on ${env.APP_VM_HOST}"
+      echo "✅ Built/pushed: ${env.API_IMAGE}:${env.VERSION}${env.WEB_BUILT=='1' ? " and ${env.WEB_IMAGE}:${env.VERSION}" : ""}"
+      echo "✅ Deployed on ${env.APP_VM_HOST} — DB:${env.DB_PORT}, API:${env.API_PORT}${env.WEB_BUILT=='1' ? ", WEB:${env.WEB_PORT}" : ""}"
     }
     failure { echo "❌ Build failed — check the stage logs above." }
   }
