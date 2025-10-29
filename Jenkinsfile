@@ -13,17 +13,21 @@ pipeline {
     CONTAINER_PORT = '8000'   // container port your app listens on
 
     // ---- Deploy target (private IP in VPC) ----
-    APP_VM_HOST = '172.31.37.22'
+    APP_VM_HOST = '172.31.37.22'   // change to public DNS/IP if exposing to internet
     APP_VM_USER = 'ubuntu'
 
     // ---- Jenkins credentials IDs ----
-    DH_CRED_ID  = 'dockerhub'   // Docker Hub Username+Password (token)
-    SSH_CRED_ID = 'appvm-ssh'   // SSH Username with private key
+    // 1) dockerhub  : Username+Password (use your Docker PAT in the password field)
+    // 2) github-https: already used by SCM (no changes here)
+    DH_CRED_ID  = 'dockerhub'
   }
 
   stages {
     stage('Checkout') {
-      steps { checkout scm }
+      steps {
+        // Uses job's configured SCM (logs show it already uses 'github-https')
+        checkout scm
+      }
     }
 
     stage('Version') {
@@ -45,9 +49,8 @@ pipeline {
           if (!fileExists(df)) { df = 'Dockerfile'; ctx = '.' }
 
           sh """
-            set -e
             docker version
-            docker build -t ${IMAGE}:${VERSION} -t ${IMAGE}:latest -f ${df} ${ctx}
+            docker build -t ${env.IMAGE}:${env.VERSION} -t ${env.IMAGE}:latest -f ${df} ${ctx}
           """
         }
       }
@@ -55,14 +58,15 @@ pipeline {
 
     stage('Docker Push') {
       steps {
-        withCredentials([usernamePassword(credentialsId: DH_CRED_ID, usernameVariable: 'DH_USER', passwordVariable: 'DH_PASS')]) {
-          sh """
+        withCredentials([usernamePassword(credentialsId: env.DH_CRED_ID, usernameVariable: 'DH_USER', passwordVariable: 'DH_PASS')]) {
+          sh '''
             set -e
-            printf %s "\$DH_PASS" | tr -d '\\r\\n' | docker login -u "\$DH_USER" --password-stdin
-            docker push ${IMAGE}:${VERSION}
-            docker push ${IMAGE}:latest
+            # normalize token to avoid CRLF issues
+            printf "%s" "$DH_PASS" | tr -d "\\r\\n" | docker login -u "$DH_USER" --password-stdin
+            docker push '"${IMAGE}"':'"${VERSION}"'
+            docker push '"${IMAGE}"':latest
             docker logout || true
-          """
+          '''
         }
       }
     }
@@ -70,41 +74,47 @@ pipeline {
     stage('Deploy to App VM') {
       when { expression { return (env.APP_VM_HOST?.trim()) } }
       steps {
-        sshagent(credentials: [env.SSH_CRED_ID]) {
-          withCredentials([usernamePassword(credentialsId: env.DH_CRED_ID, usernameVariable: 'DH_USER', passwordVariable: 'DH_PASS')]) {
-            sh """
+        withCredentials([usernamePassword(credentialsId: env.DH_CRED_ID, usernameVariable: 'DH_USER', passwordVariable: 'DH_PASS')]) {
+          sh """
+            set -e
+            SSH_KEY=/var/lib/jenkins/.ssh/id_appvm
+            SSH_OPTS="-i \$SSH_KEY -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20"
+
+            # Ensure the private key exists and has correct perms
+            if [ ! -f "\$SSH_KEY" ]; then
+              echo "ERROR: \$SSH_KEY not found on Jenkins node"; exit 1
+            fi
+            sudo chown jenkins:jenkins "\$SSH_KEY" || true
+            sudo chmod 600 "\$SSH_KEY"
+
+            # Ensure Docker is installed on remote (idempotent)
+            ssh \$SSH_OPTS ${APP_VM_USER}@${APP_VM_HOST} '
               set -e
-              SSH_OPTS="-o StrictHostKeyChecking=accept-new -o ConnectTimeout=20"
+              if ! command -v docker >/dev/null 2>&1; then
+                curl -fsSL https://get.docker.com | sh
+                sudo usermod -aG docker $USER || true
+              fi
+            '
 
-              # Ensure Docker on remote (idempotent)
-              ssh \$SSH_OPTS ${APP_VM_USER}@${APP_VM_HOST} '
-                set -e
-                if ! command -v docker >/dev/null 2>&1; then
-                  curl -fsSL https://get.docker.com | sh
-                  sudo usermod -aG docker \$USER || true
-                fi
-              '
+            # Docker Hub login on remote (pass token safely)
+            TOKEN_B64=\$(printf "%s" "${DH_PASS}" | tr -d "\\r\\n" | base64 -w0)
+            ssh \$SSH_OPTS ${APP_VM_USER}@${APP_VM_HOST} "
+              echo \$TOKEN_B64 | base64 -d | docker login -u '${DH_USER}' --password-stdin
+            "
 
-              # Login to Docker Hub on remote
-              TOKEN_B64=\$(printf "%s" "\$DH_PASS" | base64 -w0)
-              ssh \$SSH_OPTS ${APP_VM_USER}@${APP_VM_HOST} "
-                echo \$TOKEN_B64 | base64 -d | docker login -u '\$DH_USER' --password-stdin
-              "
+            # Pull & (re)run container
+            ssh \$SSH_OPTS ${APP_VM_USER}@${APP_VM_HOST} bash -lc '
+              set -e
+              docker pull ${IMAGE}:${VERSION}
+              docker rm -f ${APP_NAME} 2>/dev/null || true
+              docker run -d --name ${APP_NAME} --restart=always \
+                -p ${APP_PORT}:${CONTAINER_PORT} ${IMAGE}:${VERSION}
+            '
 
-              # Pull & (re)run container
-              ssh \$SSH_OPTS ${APP_VM_USER}@${APP_VM_HOST} bash -lc '
-                set -e
-                docker pull ${IMAGE}:${VERSION}
-                docker rm -f ${APP_NAME} 2>/dev/null || true
-                docker run -d --name ${APP_NAME} --restart=always \
-                  -p ${APP_PORT}:${CONTAINER_PORT} ${IMAGE}:${VERSION}
-              '
-
-              # Show status
-              ssh \$SSH_OPTS ${APP_VM_USER}@${APP_VM_HOST} \
-                "docker ps --filter name='${APP_NAME}' --format 'NAME={{.Names}}  STATUS={{.Status}}  PORTS={{.Ports}}'"
-            """
-          }
+            # Show container status
+            ssh \$SSH_OPTS ${APP_VM_USER}@${APP_VM_HOST} \
+              "docker ps --filter name='${APP_NAME}' --format 'NAME={{.Names}}  STATUS={{.Status}}  PORTS={{.Ports}}'"
+          """
         }
       }
     }
@@ -112,22 +122,22 @@ pipeline {
     stage('Smoke Test') {
       when { expression { return (env.APP_VM_HOST?.trim()) } }
       steps {
-        sh """
+        sh '''
           set +e
           for i in 1 2 3 4 5; do
-            curl -fsS --max-time 5 http://${APP_VM_HOST}:${APP_PORT}/ && exit 0
-            echo "Smoke attempt \$i failed; retrying in 3s..."
+            curl -fsS --max-time 5 http://'${APP_VM_HOST}':'${APP_PORT}'/ && exit 0
+            echo "Smoke attempt $i failed; retrying in 3s..."
             sleep 3
           done
           echo "WARNING: Smoke test did not return HTTP 200; continuing (check app logs)."
           exit 0
-        """
+        '''
       }
     }
   }
 
   post {
-    success { echo "✅ Build \${env.VERSION} built, pushed, and (if configured) deployed." }
+    success { echo "✅ Build ${env.VERSION} built, pushed, and deployed to ${env.APP_VM_HOST}:${env.APP_PORT}." }
     failure { echo "❌ Build failed — check the stage logs above." }
   }
 }
