@@ -100,44 +100,63 @@ pipeline {
     }
 
     stage('Deploy Stack on App VM (DB + API + WEB)') {
-      when { expression { return (env.APP_VM_HOST?.trim()) } }
-      steps {
-        sshagent(credentials: [env.SSH_CRED_ID]) {
-          withCredentials([usernamePassword(credentialsId: env.DH_CRED_ID, usernameVariable: 'DH_USER', passwordVariable: 'DH_PASS')]) {
-            sh """
-              set -e
-              SSH_OPTS="-o StrictHostKeyChecking=accept-new -o ConnectTimeout=20"
+  steps {
+    withCredentials([sshUserPrivateKey(credentialsId: env.SSH_CRED_ID, 
+                                       keyFileVariable: 'SSH_KEY',
+                                       usernameVariable: 'SSH_USER')]) {
+      script {
+        // Ensure remote dir
+        sh """
+          ssh -i "$SSH_KEY" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 \
+            ${SSH_USER}@${env.APP_VM_HOST} 'sudo mkdir -p ${env.REMOTE_DIR} && sudo chown ${SSH_USER}:${SSH_USER} ${env.REMOTE_DIR}'
+        """
 
-              # Prepare remote dir
-              ssh \$SSH_OPTS ${env.APP_VM_USER}@${env.APP_VM_HOST} "mkdir -p ${env.REMOTE_DIR}"
+        // Copy compose + env
+        if (fileExists('docker-compose.prod.yml')) {
+          sh """
+            scp -i "$SSH_KEY" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 \
+              docker-compose.prod.yml ${SSH_USER}@${env.APP_VM_HOST}:${env.REMOTE_DIR}/docker-compose.prod.yml
+          """
+        } else { error "docker-compose.prod.yml not found" }
 
-              # Copy compose template
-              scp \$SSH_OPTS docker-compose.prod.tmpl.yml ${env.APP_VM_USER}@${env.APP_VM_HOST}:${env.REMOTE_DIR}/
-
-              # Create .env for compose variable interpolation
-              ssh \$SSH_OPTS ${env.APP_VM_USER}@${env.APP_VM_HOST} "bash -lc 'cat > ${env.REMOTE_DIR}/.env <<EOF
-IMAGE_API=${env.IMAGE_API}
-IMAGE_WEB=${env.IMAGE_WEB}
-VERSION=${env.VERSION}
-EOF'"
-
-              # Docker login on remote (for pull)
-              printf "%s" "$DH_PASS" | tr -d "\\r\\n" | \
-                ssh \$SSH_OPTS ${env.APP_VM_USER}@${env.APP_VM_HOST} "docker login -u '${'$'}{DH_USER}' --password-stdin"
-
-              # Bring stack up
-              ssh \$SSH_OPTS ${env.APP_VM_USER}@${env.APP_VM_HOST} "bash -lc '
-                cd ${env.REMOTE_DIR}
-                # Compose V2 automatically reads .env in the working dir
-                docker compose -f docker-compose.prod.tmpl.yml pull
-                docker compose -f docker-compose.prod.tmpl.yml up -d
-                docker compose -f docker-compose.prod.tmpl.yml ps
-              '"
-            """
-          }
+        if (fileExists('.env.prod')) {
+          sh """
+            scp -i "$SSH_KEY" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 \
+              .env.prod ${SSH_USER}@${env.APP_VM_HOST}:${env.REMOTE_DIR}/.env.prod
+          """
+        } else {
+          sh """
+            ssh -i "$SSH_KEY" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 ${SSH_USER}@${env.APP_VM_HOST} 'cat > ${env.REMOTE_DIR}/.env.prod <<EOF
+DOCKER_USER=${env.DOCKER_USER}
+IMAGE_TAG=${env.IMAGE_TAG}
+DB_NAME=paylanka
+DB_USER=paylanka
+DB_PASS=P@ylanka123
+API_PORT=8000
+WEB_PORT=8080
+EOF'
+          """
         }
+
+        // Force IMAGE_TAG
+        sh """
+          ssh -i "$SSH_KEY" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 ${SSH_USER}@${env.APP_VM_HOST} \
+            "sed -i 's/^IMAGE_TAG=.*/IMAGE_TAG=${env.IMAGE_TAG}/' ${env.REMOTE_DIR}/.env.prod || echo IMAGE_TAG=${env.IMAGE_TAG} >> ${env.REMOTE_DIR}/.env.prod"
+        """
+
+        // Pull & up
+        sh """
+          ssh -i "$SSH_KEY" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 ${SSH_USER}@${env.APP_VM_HOST} \
+            "cd ${env.REMOTE_DIR} && \
+             docker compose -f docker-compose.prod.yml --env-file .env.prod pull && \
+             docker compose -f docker-compose.prod.yml --env-file .env.prod up -d && \
+             docker compose -f docker-compose.prod.yml --env-file .env.prod ps"
+        """
       }
     }
+  }
+}
+
 
     stage('Smoke Test') {
       when { expression { return (env.APP_VM_HOST?.trim()) } }
