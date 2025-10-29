@@ -99,60 +99,51 @@ pipeline {
       }
     }
 
-    stage('Deploy Stack on App VM (DB + API + WEB)') {
+   stage('Deploy Stack on App VM (DB + API + WEB)') {
+  environment {
+    SSH_KEY_PATH = '/var/lib/jenkins/.ssh/id_appvm'   // already tested OK
+  }
   steps {
-    withCredentials([sshUserPrivateKey(credentialsId: env.SSH_CRED_ID, 
-                                       keyFileVariable: 'SSH_KEY',
-                                       usernameVariable: 'SSH_USER')]) {
-      script {
-        // Ensure remote dir
-        sh """
-          ssh -i "$SSH_KEY" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 \
-            ${SSH_USER}@${env.APP_VM_HOST} 'sudo mkdir -p ${env.REMOTE_DIR} && sudo chown ${SSH_USER}:${SSH_USER} ${env.REMOTE_DIR}'
-        """
+    script {
+      sh(label: 'prep-remote-dir', script: '''
+        set -e
+        chmod 600 "$SSH_KEY_PATH" || true
+        ssh -i "$SSH_KEY_PATH" -o IdentitiesOnly=yes -o PubkeyAuthentication=yes \
+            -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 \
+            ubuntu@"$APP_VM_HOST" 'mkdir -p "$REMOTE_DIR" && sudo chown ubuntu:ubuntu "$REMOTE_DIR"'
+      ''')
 
-        // Copy compose + env
-        if (fileExists('docker-compose.prod.yml')) {
-          sh """
-            scp -i "$SSH_KEY" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 \
-              docker-compose.prod.yml ${SSH_USER}@${env.APP_VM_HOST}:${env.REMOTE_DIR}/docker-compose.prod.yml
-          """
-        } else { error "docker-compose.prod.yml not found" }
+      // copy files
+      sh(label: 'copy-compose', script: '''
+        set -e
+        test -f docker-compose.prod.yml
+        scp -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 \
+            docker-compose.prod.yml ubuntu@"$APP_VM_HOST":"$REMOTE_DIR"/docker-compose.prod.yml
+      ''')
 
-        if (fileExists('.env.prod')) {
-          sh """
-            scp -i "$SSH_KEY" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 \
-              .env.prod ${SSH_USER}@${env.APP_VM_HOST}:${env.REMOTE_DIR}/.env.prod
-          """
-        } else {
-          sh """
-            ssh -i "$SSH_KEY" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 ${SSH_USER}@${env.APP_VM_HOST} 'cat > ${env.REMOTE_DIR}/.env.prod <<EOF
-DOCKER_USER=${env.DOCKER_USER}
-IMAGE_TAG=${env.IMAGE_TAG}
+      sh(label: 'write-env', script: '''
+        set -e
+        ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 \
+            ubuntu@"$APP_VM_HOST" "cat > $REMOTE_DIR/.env.prod <<EOF
+DOCKER_USER=$DOCKER_USER
+IMAGE_TAG=$IMAGE_TAG
 DB_NAME=paylanka
 DB_USER=paylanka
 DB_PASS=P@ylanka123
 API_PORT=8000
 WEB_PORT=8080
-EOF'
-          """
-        }
+EOF"
+      ''')
 
-        // Force IMAGE_TAG
-        sh """
-          ssh -i "$SSH_KEY" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 ${SSH_USER}@${env.APP_VM_HOST} \
-            "sed -i 's/^IMAGE_TAG=.*/IMAGE_TAG=${env.IMAGE_TAG}/' ${env.REMOTE_DIR}/.env.prod || echo IMAGE_TAG=${env.IMAGE_TAG} >> ${env.REMOTE_DIR}/.env.prod"
-        """
-
-        // Pull & up
-        sh """
-          ssh -i "$SSH_KEY" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 ${SSH_USER}@${env.APP_VM_HOST} \
-            "cd ${env.REMOTE_DIR} && \
-             docker compose -f docker-compose.prod.yml --env-file .env.prod pull && \
+      // deploy
+      sh(label: 'compose-up', script: '''
+        set -e
+        ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 \
+            ubuntu@"$APP_VM_HOST" \
+            "cd $REMOTE_DIR && docker compose -f docker-compose.prod.yml --env-file .env.prod pull && \
              docker compose -f docker-compose.prod.yml --env-file .env.prod up -d && \
              docker compose -f docker-compose.prod.yml --env-file .env.prod ps"
-        """
-      }
+      ''')
     }
   }
 }
