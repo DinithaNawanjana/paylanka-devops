@@ -71,8 +71,8 @@ pipeline {
     stage('Docker Build - WEB') {
       steps {
         script {
-          def df  = 'services/web/Dockerfile'
-          def ctx = 'services/web'
+          def df  = 'web/Dockerfile'
+          def ctx = 'web'
           if (!fileExists(df)) {
             echo "No ${df} found — did you generate it? Skipping WEB build."
             return
@@ -85,7 +85,7 @@ pipeline {
     }
 
     stage('Docker Push - WEB') {
-      when { expression { return fileExists('services/web/Dockerfile') } }
+      when { expression { return fileExists('web/Dockerfile') } }
       steps {
         withCredentials([usernamePassword(credentialsId: env.DH_CRED_ID, usernameVariable: 'DH_USER', passwordVariable: 'DH_PASS')]) {
           sh '''
