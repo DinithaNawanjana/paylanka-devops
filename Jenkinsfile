@@ -100,31 +100,27 @@ pipeline {
     }
 
    stage('Deploy Stack on App VM (DB + API + WEB)') {
-  environment {
-    SSH_KEY_PATH = '/var/lib/jenkins/.ssh/id_appvm'   // already tested OK
-  }
   steps {
-    script {
+    withCredentials([sshUserPrivateKey(credentialsId: env.SSH_CRED_ID,
+                                       keyFileVariable: 'SSH_KEY',
+                                       usernameVariable: 'SSH_USER')]) {
       sh(label: 'prep-remote-dir', script: '''
         set -e
-        chmod 600 "$SSH_KEY_PATH" || true
-        ssh -i "$SSH_KEY_PATH" -o IdentitiesOnly=yes -o PubkeyAuthentication=yes \
+        chmod 600 "$SSH_KEY" || true
+        ssh -i "$SSH_KEY" -o IdentitiesOnly=yes -o PubkeyAuthentication=yes \
             -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 \
-            ubuntu@"$APP_VM_HOST" 'mkdir -p "$REMOTE_DIR" && sudo chown ubuntu:ubuntu "$REMOTE_DIR"'
+            "$SSH_USER"@"$APP_VM_HOST" 'mkdir -p "$REMOTE_DIR" && sudo chown '"$SSH_USER:$SSH_USER"' "$REMOTE_DIR"'
       ''')
-
-      // copy files
       sh(label: 'copy-compose', script: '''
         set -e
         test -f docker-compose.prod.yml
-        scp -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 \
-            docker-compose.prod.yml ubuntu@"$APP_VM_HOST":"$REMOTE_DIR"/docker-compose.prod.yml
+        scp -i "$SSH_KEY" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 \
+            docker-compose.prod.yml "$SSH_USER"@"$APP_VM_HOST":"$REMOTE_DIR"/docker-compose.prod.yml
       ''')
-
       sh(label: 'write-env', script: '''
         set -e
-        ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 \
-            ubuntu@"$APP_VM_HOST" "cat > $REMOTE_DIR/.env.prod <<EOF
+        ssh -i "$SSH_KEY" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 \
+            "$SSH_USER"@"$APP_VM_HOST" "cat > $REMOTE_DIR/.env.prod <<EOF
 DOCKER_USER=$DOCKER_USER
 IMAGE_TAG=$IMAGE_TAG
 DB_NAME=paylanka
@@ -134,12 +130,10 @@ API_PORT=8000
 WEB_PORT=8080
 EOF"
       ''')
-
-      // deploy
       sh(label: 'compose-up', script: '''
         set -e
-        ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 \
-            ubuntu@"$APP_VM_HOST" \
+        ssh -i "$SSH_KEY" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 \
+            "$SSH_USER"@"$APP_VM_HOST" \
             "cd $REMOTE_DIR && docker compose -f docker-compose.prod.yml --env-file .env.prod pull && \
              docker compose -f docker-compose.prod.yml --env-file .env.prod up -d && \
              docker compose -f docker-compose.prod.yml --env-file .env.prod ps"
