@@ -1,122 +1,108 @@
 pipeline {
   agent any
-  options { timestamps(); buildDiscarder(logRotator(numToKeepStr: '15')) }
-  parameters {
-    string(name: 'DOCKER_NS', defaultValue: 'dinithan', description: 'Docker Hub namespace')
-    string(name: 'APP_HOST', defaultValue: 'CHANGE_ME_APP_PUBLIC_IP', description: 'App VM public IP/DNS')
-    string(name: 'RDS_ENDPOINT', defaultValue: '', description: 'Optional RDS endpoint')
-    string(name: 'API_PORT', defaultValue: '8000')
-    string(name: 'WEB_PORT', defaultValue: '8080')
+  options {
+    timestamps()
   }
   environment {
-    API_IMAGE = "${params.DOCKER_NS}/paylanka-api"
-    WEB_IMAGE = "${params.DOCKER_NS}/paylanka-web"
-    VERSION = ""
+    DOCKER_USER = 'dinithan'
+    IMAGE      = "${DOCKER_USER}/payments-api"
+    APP_NAME   = 'paylanka-api'
+    APP_PORT   = '8000'
+
+    // Optional deploy target (set a valid host if you want deploy enabled)
+    APP_VM_HOST = 'ec2-13-60-190-46.eu-north-1.compute.amazonaws.com'
+    APP_VM_USER = 'ubuntu'
   }
+
   stages {
     stage('Checkout') {
       steps {
         checkout scm
+      }
+    }
+
+    stage('Version') {
+      steps {
         script {
-          def gitShort = sh(returnStdout: true, script: "git rev-parse --short HEAD").trim()
-          env.VERSION = "${env.BUILD_NUMBER}-${gitShort}"
+          // Try to get short SHA; fall back to timestamp if git not present
+          def sha = sh(script: 'git rev-parse --short HEAD 2>/dev/null || true', returnStdout: true).trim()
+          if (!sha) {
+            sha = sh(script: 'date +%Y%m%d%H%M%S', returnStdout: true).trim()
+          }
+          env.VERSION = sha
           echo "Version = ${env.VERSION}"
         }
       }
     }
+
     stage('Docker Build') {
       steps {
-        sh """
-          docker build -t ${API_IMAGE}:${VERSION} -t ${API_IMAGE}:latest services/payments-api
-          docker build -t ${WEB_IMAGE}:${VERSION} -t ${WEB_IMAGE}:latest web
-        """
+        script {
+          // Find Dockerfile + context dynamically
+          def df  = 'services/payments-api/Dockerfile'
+          def ctx = 'services/payments-api'
+          if (!fileExists(df)) {
+            df = 'Dockerfile'
+            ctx = '.'
+          }
+          sh """
+            docker version
+            docker build -t ${env.IMAGE}:${env.VERSION} -t ${env.IMAGE}:latest -f ${df} ${ctx}
+          """
+        }
       }
     }
+
     stage('Docker Push') {
       steps {
         withCredentials([usernamePassword(credentialsId: 'dockerhub', usernameVariable: 'DH_USER', passwordVariable: 'DH_PASS')]) {
           sh """
-            echo "$DH_PASS" | docker login -u "$DH_USER" --password-stdin
-            docker push ${API_IMAGE}:${VERSION}
-            docker push ${API_IMAGE}:latest
-            docker push ${WEB_IMAGE}:${VERSION}
-            docker push ${WEB_IMAGE}:latest
-            docker logout || true
+            echo "${DH_PASS}" | docker login -u "${DH_USER}" --password-stdin
+            docker push ${env.IMAGE}:${env.VERSION}
+            docker push ${env.IMAGE}:latest
           """
         }
       }
     }
+
     stage('Deploy to App VM') {
+      when {
+        allOf {
+          expression { return env.APP_VM_HOST?.trim() }
+        }
+      }
+      steps {
+        // Requires Jenkins credential of type "SSH Username with private key" with ID 'appvm-ssh'
+        sshagent(credentials: ['appvm-ssh']) {
+          sh """
+            ssh -o StrictHostKeyChecking=no ${env.APP_VM_USER}@${env.APP_VM_HOST} \
+              "docker login -u ${env.DOCKER_USER} -p \$(echo '${env.IMAGE}' >/dev/null; echo '***USE_TOKEN_IN_JENKINS_CRED***') || true"
+            ssh -o StrictHostKeyChecking=no ${env.APP_VM_USER}@${env.APP_VM_HOST} \
+              "docker pull ${env.IMAGE}:${env.VERSION} &&
+               docker rm -f ${env.APP_NAME} 2>/dev/null || true &&
+               docker run -d --name ${env.APP_NAME} -p ${env.APP_PORT}:8000 ${env.IMAGE}:${env.VERSION}"
+          """
+        }
+      }
+    }
+
+    stage('Smoke Test') {
       steps {
         script {
-          if (!params.APP_HOST?.trim()) { error "APP_HOST parameter is empty." }
-          def remoteScript = """
-            set -euo pipefail
-            which docker >/dev/null 2>&1 || { sudo apt-get update -y && sudo apt-get install -y docker.io docker-compose-plugin; sudo systemctl enable --now docker; }
-            sudo mkdir -p /opt/paylanka && sudo chown ubuntu:ubuntu /opt/paylanka
-            cd /opt/paylanka
-            cat > .env <<'EOF'
-API_IMAGE=${API_IMAGE}
-WEB_IMAGE=${WEB_IMAGE}
-API_TAG=${VERSION}
-WEB_TAG=${VERSION}
-API_PORT=${params.API_PORT}
-WEB_PORT=${params.WEB_PORT}
-DB_USER=postgres
-DB_PASSWORD=postgres
-DB_NAME=paylanka
-DB_PORT=5432
-EOF
-            cat > docker-compose.prod.yml <<'YAML'
-services:
-  api:
-    image: "${API_IMAGE}:${VERSION}"
-    env_file: .env
-    ports:
-      - "${params.API_PORT}:${params.API_PORT}"
-    restart: unless-stopped
-  web:
-    image: "${WEB_IMAGE}:${VERSION}"
-    env_file: .env
-    ports:
-      - "${params.WEB_PORT}:80"
-    restart: unless-stopped
-  db:
-    image: postgres:16
-    environment:
-      - POSTGRES_PASSWORD=postgres
-      - POSTGRES_DB=paylanka
-    volumes:
-      - dbdata:/var/lib/postgresql/data
-volumes:
-  dbdata:
-YAML
-            docker compose -f docker-compose.prod.yml pull
-            docker compose -f docker-compose.prod.yml up -d
-            docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}'
-            curl -fsS http://localhost:${params.API_PORT}/health || true
-          """
-          sshagent (credentials: ['appvm-ssh']) {
-            sh """
-              ssh -o StrictHostKeyChecking=no ubuntu@${params.APP_HOST} 'bash -s' <<'REMOTE'
-              ${remoteScript}
-REMOTE
-            """
+          // If deployed, try to ping the service; otherwise just log a note
+          if (env.APP_VM_HOST?.trim()) {
+            sh "curl -fsS http://${env.APP_VM_HOST}:${env.APP_PORT}/ || true"
+          } else {
+            echo "Skipping smoke test (no APP_VM_HOST set)."
           }
         }
       }
     }
-    stage('Smoke Test') {
-      steps {
-        sh """
-          curl -fsS http://${params.APP_HOST}:${params.WEB_PORT}/health || true
-          curl -fsS http://${params.APP_HOST}:${params.API_PORT}/health || true
-        """
-      }
-    }
   }
+
   post {
-    success { echo "Open: http://${params.APP_HOST}:${params.WEB_PORT}" }
-    failure { echo "Check console for stage failure." }
+    failure {
+      echo 'Check console for stage failure.'
+    }
   }
 }
