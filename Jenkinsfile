@@ -3,38 +3,30 @@ pipeline {
   options { timestamps() }
 
   environment {
-    // ---- Docker Hub repos ----
+    // ---- Images ----
     DOCKER_USER = 'dinithan'
-    API_IMAGE   = "${DOCKER_USER}/payments-api"
-    WEB_IMAGE   = "${DOCKER_USER}/payments-web"  // optional
-    DB_IMAGE    = "postgres:16"
+    IMAGE_API   = "${DOCKER_USER}/payments-api"
+    IMAGE_WEB   = "${DOCKER_USER}/payments-web"
 
-    // ---- Container names / ports ----
-    API_NAME = 'paylanka-api'
-    WEB_NAME = 'paylanka-web'
-    DB_NAME  = 'paylanka-db'
+    // ---- App info ----
+    APP_NAME_API  = 'paylanka-api'
+    APP_WEB_PORT  = '8080'
+    APP_API_PORT  = '8000'
 
-    API_PORT = '8000'
-    WEB_PORT = '8080'
-    DB_PORT  = '5432'
-
-    NET_NAME = 'paylanka-net'
-
-    // ---- App VM ----
+    // ---- Deploy target ----
     APP_VM_HOST = '172.31.37.22'
     APP_VM_USER = 'ubuntu'
-    SSH_KEY_PATH = '/var/lib/jenkins/.ssh/id_appvm' // you already verified this
+    REMOTE_DIR  = '/home/ubuntu/paylanka'
 
-    // ---- Jenkins creds ----
-    DH_CRED_ID = 'dockerhub'  // DockerHub username+PAT
-    PG_CRED_ID = 'pg-admin'   // Postgres username+password
-
-    // runtime flags
-    WEB_BUILT = '0'           // will be set to '1' if WEB gets built
+    // ---- Jenkins credential IDs ----
+    DH_CRED_ID   = 'dockerhub'   // Docker Hub (username+PAT)
+    SSH_CRED_ID  = 'appvm-ssh'   // SSH Username+PrivateKey (username=ubuntu)
   }
 
   stages {
-    stage('Checkout') { steps { checkout scm } }
+    stage('Checkout') {
+      steps { checkout scm }
+    }
 
     stage('Version') {
       steps {
@@ -47,16 +39,16 @@ pipeline {
       }
     }
 
-    // ===== API =====
     stage('Docker Build - API') {
       steps {
         script {
           def df  = 'services/payments-api/Dockerfile'
           def ctx = 'services/payments-api'
-          if (!fileExists(df)) { error "API Dockerfile not found at ${df}" }
+          if (!fileExists(df)) { error "Missing ${df}. Commit your API Dockerfile." }
+
           sh """
             docker version
-            docker build -t ${env.API_IMAGE}:${env.VERSION} -t ${env.API_IMAGE}:latest -f ${df} ${ctx}
+            docker build -t ${env.IMAGE_API}:${env.VERSION} -t ${env.IMAGE_API}:latest -f ${df} ${ctx}
           """
         }
       }
@@ -69,160 +61,95 @@ pipeline {
             set -e
             printf "%s" "$DH_PASS" | tr -d "\\r\\n" | docker login -u "$DH_USER" --password-stdin
           '''
-          sh "docker push ${env.API_IMAGE}:${env.VERSION}"
-          sh "docker push ${env.API_IMAGE}:latest"
+          sh "docker push ${env.IMAGE_API}:${env.VERSION}"
+          sh "docker push ${env.IMAGE_API}:latest"
           sh 'docker logout || true'
         }
       }
     }
 
-    // ===== WEB (optional) =====
-    stage('Docker Build - WEB (optional)') {
+    stage('Docker Build - WEB') {
       steps {
         script {
           def df  = 'services/web/Dockerfile'
           def ctx = 'services/web'
-          if (fileExists(df)) {
-            sh "docker build -t ${env.WEB_IMAGE}:${env.VERSION} -t ${env.WEB_IMAGE}:latest -f ${df} ${ctx}"
-            env.WEB_BUILT = '1'
-          } else {
-            echo "No ${df} found, skipping WEB image build."
-            env.WEB_BUILT = '0'
+          if (!fileExists(df)) {
+            echo "No ${df} found — did you generate it? Skipping WEB build."
+            return
           }
+          sh """
+            docker build -t ${env.IMAGE_WEB}:${env.VERSION} -t ${env.IMAGE_WEB}:latest -f ${df} ${ctx}
+          """
         }
       }
     }
 
-    stage('Docker Push - WEB (optional)') {
-      when { expression { return env.WEB_BUILT == '1' } }
+    stage('Docker Push - WEB') {
+      when { expression { return fileExists('services/web/Dockerfile') } }
       steps {
         withCredentials([usernamePassword(credentialsId: env.DH_CRED_ID, usernameVariable: 'DH_USER', passwordVariable: 'DH_PASS')]) {
           sh '''
             set -e
             printf "%s" "$DH_PASS" | tr -d "\\r\\n" | docker login -u "$DH_USER" --password-stdin
           '''
-          sh "docker push ${env.WEB_IMAGE}:${env.VERSION}"
-          sh "docker push ${env.WEB_IMAGE}:latest"
+          sh "docker push ${env.IMAGE_WEB}:${env.VERSION}"
+          sh "docker push ${env.IMAGE_WEB}:latest"
           sh 'docker logout || true'
         }
       }
     }
 
-    // ===== Deploy (DB + API + optional WEB) =====
     stage('Deploy Stack on App VM (DB + API + WEB)') {
+      when { expression { return (env.APP_VM_HOST?.trim()) } }
       steps {
-        withCredentials([
-          usernamePassword(credentialsId: env.DH_CRED_ID, usernameVariable: 'DH_USER', passwordVariable: 'DH_PASS'),
-          usernamePassword(credentialsId: env.PG_CRED_ID, usernameVariable: 'PG_USER', passwordVariable: 'PG_PASS')
-        ]) {
-          script {
+        sshagent(credentials: [env.SSH_CRED_ID]) {
+          withCredentials([usernamePassword(credentialsId: env.DH_CRED_ID, usernameVariable: 'DH_USER', passwordVariable: 'DH_PASS')]) {
             sh """
               set -e
-              SSH_KEY='${env.SSH_KEY_PATH}'
-              SSH_OPTS="-i \$SSH_KEY -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20"
-              [ -f "\$SSH_KEY" ] && chmod 600 "\$SSH_KEY"
+              SSH_OPTS="-o StrictHostKeyChecking=accept-new -o ConnectTimeout=20"
 
-              # Login to Docker Hub on remote
-              printf "%s" "$DH_PASS" | tr -d "\\r\\n" | \\
-                ssh \$SSH_OPTS ${env.APP_VM_USER}@${env.APP_VM_HOST} \\
-                "docker login -u '${'$'}{DH_USER}' --password-stdin"
+              # Prepare remote dir
+              ssh \$SSH_OPTS ${env.APP_VM_USER}@${env.APP_VM_HOST} "mkdir -p ${env.REMOTE_DIR}"
 
-              # Ensure network
-              ssh \$SSH_OPTS ${env.APP_VM_USER}@${env.APP_VM_HOST} \\
-                "docker network inspect ${env.NET_NAME} >/dev/null 2>&1 || docker network create ${env.NET_NAME}"
-            """
+              # Copy compose template
+              scp \$SSH_OPTS docker-compose.prod.tmpl.yml ${env.APP_VM_USER}@${env.APP_VM_HOST}:${env.REMOTE_DIR}/
 
-            // DB
-            sh """
-              set -e
-              SSH_OPTS="-i ${env.SSH_KEY_PATH} -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20"
-              ssh \$SSH_OPTS ${env.APP_VM_USER}@${env.APP_VM_HOST} bash -lc 'set -e
-                docker rm -f ${env.DB_NAME} 2>/dev/null || true
-                docker run -d --name ${env.DB_NAME} --restart=always \\
-                  --network ${env.NET_NAME} \\
-                  -e POSTGRES_DB=paylanka \\
-                  -e POSTGRES_USER=${PG_USER} \\
-                  -e POSTGRES_PASSWORD=${PG_PASS} \\
-                  -v paylanka-pg:/var/lib/postgresql/data \\
-                  -p ${env.DB_PORT}:5432 ${env.DB_IMAGE}
-              '
-            """
+              # Create .env for compose variable interpolation
+              ssh \$SSH_OPTS ${env.APP_VM_USER}@${env.APP_VM_HOST} "bash -lc 'cat > ${env.REMOTE_DIR}/.env <<EOF
+IMAGE_API=${env.IMAGE_API}
+IMAGE_WEB=${env.IMAGE_WEB}
+VERSION=${env.VERSION}
+EOF'"
 
-            // API
-            sh """
-              set -e
-              SSH_OPTS="-i ${env.SSH_KEY_PATH} -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20"
-              ssh \$SSH_OPTS ${env.APP_VM_USER}@${env.APP_VM_HOST} bash -lc 'set -e
-                docker pull ${env.API_IMAGE}:${env.VERSION}
-                docker rm -f ${env.API_NAME} 2>/dev/null || true
-                docker run -d --name ${env.API_NAME} --restart=always \\
-                  --network ${env.NET_NAME} \\
-                  -e DATABASE_URL=postgres://${PG_USER}:${PG_PASS}@${env.DB_NAME}:5432/paylanka \\
-                  -p ${env.API_PORT}:${env.API_PORT} ${env.API_IMAGE}:${env.VERSION}
-              '
-            """
+              # Docker login on remote (for pull)
+              printf "%s" "$DH_PASS" | tr -d "\\r\\n" | \
+                ssh \$SSH_OPTS ${env.APP_VM_USER}@${env.APP_VM_HOST} "docker login -u '${'$'}{DH_USER}' --password-stdin"
 
-            // WEB (only if built)
-            if (env.WEB_BUILT == '1') {
-              sh """
-                set -e
-                SSH_OPTS="-i ${env.SSH_KEY_PATH} -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20"
-                ssh \$SSH_OPTS ${env.APP_VM_USER}@${env.APP_VM_HOST} bash -lc 'set -e
-                  docker pull ${env.WEB_IMAGE}:${env.VERSION}
-                  docker rm -f ${env.WEB_NAME} 2>/dev/null || true
-                  docker run -d --name ${env.WEB_NAME} --restart=always \\
-                    --network ${env.NET_NAME} \\
-                    -p ${env.WEB_PORT}:80 ${env.WEB_IMAGE}:${env.VERSION}
-                '
-              """
-            } else {
-              echo "WEB deploy skipped (no WEB image)."
-            }
-
-            // Status
-            sh """
-              set -e
-              SSH_OPTS="-i ${env.SSH_KEY_PATH} -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20"
-              ssh \$SSH_OPTS ${env.APP_VM_USER}@${env.APP_VM_HOST} \\
-                "docker ps --format 'NAME={{.Names}}  STATUS={{.Status}}  PORTS={{.Ports}}' | egrep -i '${env.DB_NAME}|${env.API_NAME}|${env.WEB_NAME}' || true"
+              # Bring stack up
+              ssh \$SSH_OPTS ${env.APP_VM_USER}@${env.APP_VM_HOST} "bash -lc '
+                cd ${env.REMOTE_DIR}
+                # Compose V2 automatically reads .env in the working dir
+                docker compose -f docker-compose.prod.tmpl.yml pull
+                docker compose -f docker-compose.prod.tmpl.yml up -d
+                docker compose -f docker-compose.prod.tmpl.yml ps
+              '"
             """
           }
         }
       }
     }
 
-    // ===== Smoke tests =====
     stage('Smoke Test') {
+      when { expression { return (env.APP_VM_HOST?.trim()) } }
       steps {
-        script {
-          sh """
-            for i in 1 2 3 4 5; do
-              curl -fsS --max-time 5 http://${env.APP_VM_HOST}:${env.API_PORT}/ && exit 0
-              echo "Smoke attempt \\$i (API) failed; retrying..."; sleep 3
-            done
-            echo "WARN: API smoke not 200"; exit 0
-          """
-          if (env.WEB_BUILT == '1') {
-            sh """
-              for i in 1 2 3 4 5; do
-                curl -fsS --max-time 5 http://${env.APP_VM_HOST}:${env.WEB_PORT}/ && exit 0
-                echo "Smoke attempt \\$i (WEB) failed; retrying..."; sleep 3
-              done
-              echo "WARN: WEB smoke not 200"; exit 0
-            """
-          } else {
-            echo "WEB smoke skipped."
-          }
-        }
+        // Escape $i so Groovy doesn’t treat it as a Groovy var
+        sh "for i in 1 2 3 4 5; do curl -fsS --max-time 5 http://${env.APP_VM_HOST}:${env.APP_WEB_PORT}/ && exit 0; echo 'Smoke attempt '\\\$i' failed; sleep 3'; sleep 3; done; echo 'WARN: smoke not 200'; exit 0"
       }
     }
   }
 
   post {
-    success {
-      echo "✅ Built/pushed: ${env.API_IMAGE}:${env.VERSION}${env.WEB_BUILT=='1' ? " and ${env.WEB_IMAGE}:${env.VERSION}" : ""}"
-      echo "✅ Deployed on ${env.APP_VM_HOST} — DB:${env.DB_PORT}, API:${env.API_PORT}${env.WEB_BUILT=='1' ? ", WEB:${env.WEB_PORT}" : ""}"
-    }
+    success { echo "✅ Built & deployed VERSION=${env.VERSION}. Web: http://${env.APP_VM_HOST}:${env.APP_WEB_PORT}  API: http://${env.APP_VM_HOST}:${env.APP_API_PORT}" }
     failure { echo "❌ Build failed — check the stage logs above." }
   }
 }
