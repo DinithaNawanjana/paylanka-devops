@@ -113,6 +113,7 @@ stage('Smoke Test') {
   }
 }
 
+
   post {
     success { echo "✅ Build ${env.VERSION} built, pushed, and deployed to ${env.APP_VM_HOST}:${env.APP_PORT}." }
     failure { echo "❌ Build failed — check the stage logs above." }
